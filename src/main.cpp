@@ -14,7 +14,7 @@ static int wpm = 17;
 static int wpm_farnsworth = wpm;
 static int dah_to_dit_ratio = 3;
 
-static int volume = 5;
+static int volume = 2;
 
 typedef enum {
   CWS_Idle = 0,
@@ -34,6 +34,13 @@ typedef struct {
   unsigned long dah_rest;
 } WPMConfig;
 static WPMConfig wpmconfig = {0};
+
+typedef enum {
+  QueuedPaddle_none = 0,
+  QueuedPaddle_dit,
+  QueuedPaddle_dah
+} QueuedPaddleType;
+static QueuedPaddleType queuedPaddle = QueuedPaddle_none;
 
 // ---------
 // Boring Function Declarations
@@ -118,7 +125,22 @@ void loop() {
         new_state = CWS_Idle;
       }
       break;
+  }
 
+  // Kick off the queued paddle if there is one
+  if (new_state == CWS_Idle) {
+    switch(queuedPaddle) {
+      case QueuedPaddle_dit:
+        new_state = CWS_dit_active;
+        queuedPaddle = QueuedPaddle_none;
+        break;
+      case QueuedPaddle_dah:
+        new_state = CWS_dah_active;
+        queuedPaddle = QueuedPaddle_none;
+        break;
+      case QueuedPaddle_none:
+        break;
+    }
   }
 
   if (straightKey_enabled == true) {
@@ -172,21 +194,51 @@ CWState handle_paddles(CWState curState, CWState lastState) {
   if (straightKey_enabled == true) return curState;
   
   CWState nextState = curState;
+  bool ditPaddle = false;
+  bool dahPaddle = false;
+
   if (digitalRead(ditPaddle_pin) == 0) {
-    if (curState == CWS_Idle) {
-      Serial.println("dit paddle is active");
-      nextState = CWS_dit_active;
-    } else {
-      // TODO: Enqueue the paddle press
-    }
-  }   
+    ditPaddle = true;
+  }
   if (digitalRead(dahPaddle_pin) == 0) {
-    if (curState == CWS_Idle) {
+    dahPaddle = true;
+  }
+  
+  // The state machine kicks off the enqueued paddle before handling new paddles, so if we are idle here we shouldn't have a paddle enqueued.
+  if (curState == CWS_Idle) {
+    if (ditPaddle) {
+      nextState = CWS_dit_active;
+    } else if (dahPaddle) {
       nextState = CWS_dah_active;
-    } else {
-      // TODO: Enqueue the paddle press
     }
-  } 
+  } else {
+      switch(curState) {
+        case CWS_dit_active:
+          if (dahPaddle) {
+            queuedPaddle = QueuedPaddle_dah;
+          }
+          break;
+        case CWS_dit_rest:
+          if (dahPaddle) {
+            queuedPaddle = QueuedPaddle_dah;
+          } 
+          break;
+        case CWS_dah_active:
+          if (ditPaddle) {
+            queuedPaddle = QueuedPaddle_dit;
+          }
+          break;
+        case CWS_dah_rest:
+          if (ditPaddle) {
+            queuedPaddle = QueuedPaddle_dit;
+          } 
+          break;
+        case CWS_Idle:
+        case CWS_manual_active:
+          break;
+      }
+  }
+
   return nextState;
 }
 
@@ -195,10 +247,13 @@ CWState handle_paddles(CWState curState, CWState lastState) {
 // (the ESP8266 Arduino library doesn't implement tone())
 
 void playTone(int pin, int frequency) {
+  pinMode(speaker_pin, OUTPUT);
   analogWriteFreq(frequency);
   analogWrite(pin, volume);
 }
 
 void endTone(int pin) {
+  analogWriteFreq(0);
   analogWrite(pin, 0);
+  pinMode(speaker_pin, INPUT);
 }
